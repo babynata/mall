@@ -41,6 +41,11 @@ public class WebLog {
     private String uri;
 
     /**
+     * 请求路径（等同于URI，用于统一字段命名）
+     */
+    private String path;
+
+    /**
      * URL
      */
     private String url;
@@ -54,6 +59,11 @@ public class WebLog {
      * IP地址
      */
     private String ip;
+
+    /**
+     * HTTP响应状态码
+     */
+    private Integer status;
 
     /**
      * 请求参数

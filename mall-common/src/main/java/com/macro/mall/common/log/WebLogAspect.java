@@ -22,6 +22,7 @@ import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 
 import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
 import java.util.ArrayList;
@@ -56,38 +57,67 @@ public class WebLogAspect {
         long startTime = System.currentTimeMillis();
         //获取当前请求对象
         ServletRequestAttributes attributes = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
-        HttpServletRequest request = attributes.getRequest();
-        //记录请求信息(通过Logstash传入Elasticsearch)
-        WebLog webLog = new WebLog();
-        Object result = joinPoint.proceed();
+        HttpServletRequest request = attributes != null ? attributes.getRequest() : null;
+        HttpServletResponse response = attributes != null ? attributes.getResponse() : null;
+
         Signature signature = joinPoint.getSignature();
         MethodSignature methodSignature = (MethodSignature) signature;
         Method method = methodSignature.getMethod();
-        if (method.isAnnotationPresent(ApiOperation.class)) {
-            ApiOperation log = method.getAnnotation(ApiOperation.class);
-            webLog.setDescription(log.value());
+
+        Object result = null;
+        Throwable throwable = null;
+        try {
+            result = joinPoint.proceed();
+            return result;
+        } catch (Throwable t) {
+            throwable = t;
+            throw t;
+        } finally {
+            //记录请求信息(通过Logstash传入Elasticsearch)
+            WebLog webLog = new WebLog();
+            if (method.isAnnotationPresent(ApiOperation.class)) {
+                ApiOperation log = method.getAnnotation(ApiOperation.class);
+                webLog.setDescription(log.value());
+            }
+            long endTime = System.currentTimeMillis();
+
+            Integer status = null;
+            if (response != null) {
+                status = response.getStatus();
+            } else if (throwable != null) {
+                status = 500;
+            }
+
+            if (request != null) {
+                String urlStr = request.getRequestURL().toString();
+                webLog.setBasePath(StrUtil.removeSuffix(urlStr, URLUtil.url(urlStr).getPath()));
+                webLog.setUsername(request.getRemoteUser());
+                webLog.setIp(RequestUtil.getRequestIp(request));
+                webLog.setMethod(request.getMethod());
+                webLog.setParameter(getParameter(method, joinPoint.getArgs()));
+                webLog.setUri(request.getRequestURI());
+                webLog.setPath(request.getRequestURI());
+                webLog.setUrl(request.getRequestURL().toString());
+            } else {
+                webLog.setParameter(getParameter(method, joinPoint.getArgs()));
+            }
+            webLog.setResult(result);
+            webLog.setSpendTime((int) (endTime - startTime));
+            webLog.setStartTime(startTime);
+            webLog.setStatus(status);
+
+            Map<String,Object> logMap = new HashMap<>();
+            logMap.put("method", webLog.getMethod());
+            logMap.put("path", webLog.getPath());
+            logMap.put("status", webLog.getStatus());
+            logMap.put("spendTime", webLog.getSpendTime());
+            // 保留原有字段，避免影响既有日志消费
+            logMap.put("url", webLog.getUrl());
+            logMap.put("parameter", webLog.getParameter());
+            logMap.put("description", webLog.getDescription());
+            //        LOGGER.info("{}", JSONUtil.parse(webLog));
+            LOGGER.info(Markers.appendEntries(logMap), JSONUtil.parse(webLog).toString());
         }
-        long endTime = System.currentTimeMillis();
-        String urlStr = request.getRequestURL().toString();
-        webLog.setBasePath(StrUtil.removeSuffix(urlStr, URLUtil.url(urlStr).getPath()));
-        webLog.setUsername(request.getRemoteUser());
-        webLog.setIp(RequestUtil.getRequestIp(request));
-        webLog.setMethod(request.getMethod());
-        webLog.setParameter(getParameter(method, joinPoint.getArgs()));
-        webLog.setResult(result);
-        webLog.setSpendTime((int) (endTime - startTime));
-        webLog.setStartTime(startTime);
-        webLog.setUri(request.getRequestURI());
-        webLog.setUrl(request.getRequestURL().toString());
-        Map<String,Object> logMap = new HashMap<>();
-        logMap.put("url",webLog.getUrl());
-        logMap.put("method",webLog.getMethod());
-        logMap.put("parameter",webLog.getParameter());
-        logMap.put("spendTime",webLog.getSpendTime());
-        logMap.put("description",webLog.getDescription());
-//        LOGGER.info("{}", JSONUtil.parse(webLog));
-        LOGGER.info(Markers.appendEntries(logMap), JSONUtil.parse(webLog).toString());
-        return result;
     }
 
     /**
