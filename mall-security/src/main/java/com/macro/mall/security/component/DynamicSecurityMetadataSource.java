@@ -17,7 +17,12 @@ import java.util.*;
  */
 public class DynamicSecurityMetadataSource implements FilterInvocationSecurityMetadataSource {
 
-    private static Map<String, ConfigAttribute> configAttributeMap = null;
+    /**
+     * 假设性修复：
+     * 在高并发下该缓存可能被并发初始化/清理，导致偶发 NPE 或并发读写问题。
+     * 这里使用 volatile + 局部快照 + 同步初始化来做防御性增强，不改变原有权限匹配逻辑。
+     */
+    private static volatile Map<String, ConfigAttribute> configAttributeMap = null;
     @Autowired
     private DynamicSecurityService dynamicSecurityService;
 
@@ -27,24 +32,36 @@ public class DynamicSecurityMetadataSource implements FilterInvocationSecurityMe
     }
 
     public void clearDataSource() {
-        configAttributeMap.clear();
+        // 防御性：并发场景下可能为 null，且不直接 clear 避免影响正在读取的线程
         configAttributeMap = null;
     }
 
     @Override
     public Collection<ConfigAttribute> getAttributes(Object o) throws IllegalArgumentException {
-        if (configAttributeMap == null) this.loadDataSource();
+        Map<String, ConfigAttribute> localMap = configAttributeMap;
+        if (localMap == null) {
+            synchronized (this) {
+                if (configAttributeMap == null) {
+                    this.loadDataSource();
+                }
+                localMap = configAttributeMap;
+            }
+        }
         List<ConfigAttribute>  configAttributes = new ArrayList<>();
         //获取当前访问的路径
         String url = ((FilterInvocation) o).getRequestUrl();
         String path = URLUtil.getPath(url);
         PathMatcher pathMatcher = new AntPathMatcher();
-        Iterator<String> iterator = configAttributeMap.keySet().iterator();
+        if (localMap == null || localMap.isEmpty()) {
+            // 未设置操作请求权限，返回空集合
+            return configAttributes;
+        }
+        Iterator<String> iterator = localMap.keySet().iterator();
         //获取访问该路径所需资源
         while (iterator.hasNext()) {
             String pattern = iterator.next();
             if (pathMatcher.match(pattern, path)) {
-                configAttributes.add(configAttributeMap.get(pattern));
+                configAttributes.add(localMap.get(pattern));
             }
         }
         // 未设置操作请求权限，返回空集合
